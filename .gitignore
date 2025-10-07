@@ -1,0 +1,33 @@
+# Node / React (if any frontend)
+node_modules/
+dist/
+build/
+
+# Python virtual environment
+venv/
+ENV/
+env/
+__pycache__/
+*.pyc
+*.pyo
+
+# Environment / secrets
+.env
+.env.local
+.env.*.local
+
+# Logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+*.log
+
+# IDE / editor settings
+.vscode/
+.idea/
+*.sublime-workspace
+*.sublime-project
+
+# OS files
+.DS_Store
+Thumbs.db
