@@ -7,6 +7,9 @@
 // - Theme (light/dark) persistence
 // - File upload integration (calls /api/upload)
 // - Safe fallbacks if some backend endpoints are missing
+//
+// NOTE: This file intentionally is long and explicit to cover all behaviors
+// and to make debugging easy. Trim later if you prefer smaller components.
 
 import React, { useEffect, useRef, useState } from "react";
 
@@ -20,6 +23,7 @@ import ChatContainer from "@/components/ui/chat-container";
 import FileUploader from "@/components/ui/file-uploader";
 import Message from "@/components/ui/message";
 import TypingIndicator from "@/components/ui/typing-indicator";
+import ThemeToggle from "@/components/ui/theme-toggle";
 import ChatHeaderExtras from "@/components/ui/chat-header-extras";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -705,13 +709,15 @@ export default function ChatInterface() {
               <AgentSelector agents={agents} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} />
 
               {/* theme toggle */}
-              <button
+              {/* <button
                 onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
                 title="Toggle theme"
                 className="px-2 py-1 rounded border bg-white/5"
               >
                 {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-              </button>
+              </button> */}
+              <ThemeToggle className="ml-2" />
+
 
               {/* Export/share buttons */}
               <div className="flex gap-1">
@@ -875,4 +881,4 @@ export default function ChatInterface() {
     </div>
   );
 }
-// frontend/rockbot-ui/src/components/ChatInterface.jsx 
+// frontend/rockbot-ui/src/components/ChatInterface.jsx
