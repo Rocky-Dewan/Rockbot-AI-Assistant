@@ -1,4 +1,18 @@
+// frontend/rockbot-ui/src/components/ChatInterface.jsx
+// Big, comprehensive Chat interface implementing:
+// - Multi-agent selection
+// - Conversation list with create/delete/share/export
+// - Message list with proper toolbars (user vs assistant)
+// - Optimistic updates and graceful error handling
+// - Theme (light/dark) persistence
+// - File upload integration (calls /api/upload)
+// - Safe fallbacks if some backend endpoints are missing
+
 import React, { useEffect, useRef, useState } from "react";
+
+// Keep these imports — your project already has these UI pieces.
+// They may be used by your app; we also build some UI inside this file
+// so the ChatInterface remains robust even if some ui/* components behave differently.
 import Sidebar from "@/components/ui/sidebar";
 import Header from "@/components/ui/header";
 import EmptyState from "@/components/ui/empty-state";
@@ -10,47 +24,274 @@ import ChatHeaderExtras from "@/components/ui/chat-header-extras";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Send, Loader2, ChevronDown } from "lucide-react";
+
+// Icons & motion
+import { Send, Loader2, ChevronDown, Copy, Trash2, Edit3, Download, Share2, Moon, Sun } from "lucide-react";
 import { motion } from "framer-motion";
 
 /**
- * ChatInterface page
- * - Uses the modular components placed under src/components/ui
- * - Long / feature-complete implementation (theme persistence, inline edit, optimistic UI, reactions, file upload)
+ * API base detection:
+ * - Prefer Vite env var VITE_API_BASE_URL (set in .env.production)
+ * - If not present, fallback to relative '/api' (works when served from same origin)
+ * - If the app is served from a different host than API, set the VITE_API_BASE_URL.
  */
+const ENV_API = import.meta.env?.VITE_API_BASE_URL;
+const API_BASE = ENV_API && ENV_API.length > 0 ? ENV_API.replace(/\/$/, "") : "/api";
 
-const API_BASE = import.meta.env.VITE_API_BASE_URL || "/api";
-
+/**
+ * Utility helpers
+ */
 function uid(prefix = "") {
   return `${prefix}${Math.random().toString(36).slice(2, 9)}`;
 }
 
+function formatTime(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+}
+
+/**
+ * Small local MessageBubble component so we can absolutely control the toolbar
+ * appearance for assistant vs user messages. This will be used in mapping over
+ * messages if your imported Message component doesn't implement exactly our logic.
+ *
+ * If your project's Message component is feature-complete, you can remove this local
+ * component and use the imported one — we include both imports so build is safe.
+ */
+function MessageBubble({ msg, isOwn, onEdit, onDelete, onCopy, onLike, onDislike, onReply }) {
+  const baseCls =
+    "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words leading-relaxed shadow-sm";
+  const userCls = "bg-blue-600 text-white self-end";
+  const assistantCls = "bg-gray-800 text-white/90 self-start";
+
+  return (
+    <div className={`flex ${isOwn ? "justify-end" : "justify-start"} py-1`}>
+      <div className={`max-w-[78%] flex flex-col ${isOwn ? "items-end" : "items-start"}`}>
+        <div className={`${baseCls} ${isOwn ? userCls : assistantCls}`}>
+          {/* message content */}
+          <div>{msg.content}</div>
+          {/* small timestamp */}
+          <div className="text-[10px] opacity-70 mt-1 text-right">{formatTime(msg.timestamp)}</div>
+        </div>
+
+        {/* toolbar */}
+        <div className="mt-1 flex gap-1">
+          {isOwn ? (
+            <>
+              <button
+                title="Edit message"
+                onClick={() => onEdit?.(msg)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                <Edit3 className="w-4 h-4" />
+              </button>
+
+              <button
+                title="Delete message"
+                onClick={() => onDelete?.(msg)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                title="Copy"
+                onClick={() => onCopy?.(msg.content)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                <Copy className="w-4 h-4" />
+              </button>
+
+              <button
+                title="Like"
+                onClick={() => onLike?.(msg)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                👍
+              </button>
+
+              <button
+                title="Dislike"
+                onClick={() => onDislike?.(msg)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                👎
+              </button>
+
+              <button
+                title="Reply"
+                onClick={() => onReply?.(msg)}
+                className="p-1 rounded border hover:bg-white/5"
+              >
+                ↩
+              </button>
+            </>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Inline Sidebar rendering (fallback) — ensures delete/share/export exists even if your imported Sidebar
+ * doesn't implement all actions. We will try to pass these handlers to the imported Sidebar as props, but
+ * if it ignores them, this internal Sidebar below will guarantee the UX.
+ */
+function LocalSidebar({ conversations, currentConversation, onSelect, onNew, onDelete, onExport, onShare, onToggleMobile }) {
+  return (
+    <div className="w-full h-full flex flex-col">
+      <div className="px-3 py-3 border-b flex items-center justify-between">
+        <div>
+          <div className="font-bold text-lg">Rockbot</div>
+          <div className="text-xs opacity-70">Your assistant</div>
+        </div>
+
+        <div className="flex items-center gap-2">
+          <button onClick={onNew} title="New conversation" className="px-2 py-1 border rounded">New</button>
+          <button onClick={onToggleMobile} title="Toggle sidebar" className="px-2 py-1 border rounded">☰</button>
+        </div>
+      </div>
+
+      <div className="overflow-auto flex-1">
+        {conversations.length === 0 ? (
+          <div className="p-4 text-sm text-gray-400">No conversations yet</div>
+        ) : (
+          conversations.map((c) => (
+            <div
+              key={c.id}
+              className={`p-2 border-b flex items-center justify-between cursor-pointer ${currentConversation?.id === c.id ? "bg-white/5" : ""}`}
+            >
+              <div onClick={() => onSelect(c)} className="flex-1">
+                <div className="font-medium">{c.title || "Untitled"}</div>
+                <div className="text-xs opacity-60">{new Date(c.updated_at || c.created_at).toLocaleString()}</div>
+              </div>
+              <div className="flex gap-1">
+                <button title="Export PDF" onClick={() => onExport(c)} className="p-1 rounded border">
+                  <Download className="w-4 h-4" />
+                </button>
+                <button title="Share" onClick={() => onShare(c)} className="p-1 rounded border">
+                  <Share2 className="w-4 h-4" />
+                </button>
+                <button title="Delete" onClick={() => onDelete(c)} className="p-1 rounded border">
+                  <Trash2 className="w-4 h-4" />
+                </button>
+              </div>
+            </div>
+          ))
+        )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * AgentSelector UI - shows list of agents and allows picking.
+ * Agents data shape expected: { agentKey: { name, capabilities, ... } }
+ */
+function AgentSelector({ agents, selectedAgent, setSelectedAgent }) {
+  const keys = Object.keys(agents || {});
+  if (keys.length === 0) {
+    return <div className="text-sm text-gray-400">No agents</div>;
+  }
+
+  return (
+    <div className="flex items-center gap-2">
+      <label className="text-xs opacity-80">Agent</label>
+      <select
+        value={selectedAgent}
+        onChange={(e) => setSelectedAgent(e.target.value)}
+        className="px-2 py-1 rounded border bg-white/90"
+      >
+        {keys.map((k) => (
+          <option key={k} value={k}>
+            {agents[k].name || k}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
+/**
+ * FileUploaderInline - a simple file input that posts to /api/upload (multimodal)
+ * and returns an object `{ localUrl, name, data }` matching the expectations in sendMessage.
+ */
+function FileUploaderInline({ onUploadComplete }) {
+  const fileRef = useRef(null);
+
+  async function handleFile(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    // show local preview immediately
+    const localUrl = URL.createObjectURL(file);
+    const name = file.name;
+    // Basic upload: call backend
+    const fd = new FormData();
+    fd.append("file", file);
+
+    try {
+      const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: fd });
+      if (!res.ok) {
+        // fallback: return local info without backend metadata
+        onUploadComplete?.({ localUrl, name, data: null });
+        return;
+      }
+      const json = await res.json();
+      // Expect backend to return metadata url or similar
+      onUploadComplete?.({ localUrl, name, data: json });
+    } catch (e) {
+      console.warn("File upload failed", e);
+      onUploadComplete?.({ localUrl, name, data: null });
+    } finally {
+      // reset input
+      fileRef.current.value = "";
+    }
+  }
+
+  return (
+    <div>
+      <input ref={fileRef} type="file" onChange={handleFile} className="hidden" id="fileuploader-inline" />
+      <label htmlFor="fileuploader-inline" className="px-3 py-1 border rounded cursor-pointer">
+        Attach
+      </label>
+    </div>
+  );
+}
+
+/**
+ * ChatInterface main component
+ */
 export default function ChatInterface() {
-  // app-level state
+  // app state
   const [conversations, setConversations] = useState([]);
   const [currentConversation, setCurrentConversation] = useState(null);
-  const [agents, setAgents] = useState({});
-  const [selectedAgent, setSelectedAgent] = useState("general");
   const [messages, setMessages] = useState([]);
+  const [agents, setAgents] = useState({});
+  const [selectedAgent, setSelectedAgent] = useState("");
   const [inputMessage, setInputMessage] = useState("");
-  const [isTyping, setIsTyping] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const [isTyping, setIsTyping] = useState(false);
   const [editingId, setEditingId] = useState(null);
   const [editingText, setEditingText] = useState("");
   const [showSidebar, setShowSidebar] = useState(true);
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem("rockbot_theme") || "light";
+      return localStorage.getItem("rockbot_theme") || "dark";
     } catch {
-      return "light";
+      return "dark";
     }
   });
-  const [autoscroll, setAutoscroll] = useState(true); // auto-scroll lock toggle
 
+  // refs
   const messagesEndRef = useRef(null);
   const scrollAreaRef = useRef(null);
 
-  // ------------------- theme persistence -------------------
+  // Theme persistence
   useEffect(() => {
     document.documentElement.classList.toggle("dark", theme === "dark");
     try {
@@ -58,71 +299,72 @@ export default function ChatInterface() {
     } catch { }
   }, [theme]);
 
-  // ------------------- initial load -------------------
+  // initial load
   useEffect(() => {
     loadAgents();
     loadConversations();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // load messages when current conversation changes
+  // load messages when conversation changes
   useEffect(() => {
     if (currentConversation?.id) {
       loadConversation(currentConversation.id);
     } else {
       setMessages([]);
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentConversation?.id]);
 
-  // autoscroll when messages or typing indicator changes
+  // autoscroll when messages change
   useEffect(() => {
-    if (autoscroll) {
-      messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
-    }
-  }, [messages, isTyping, autoscroll]);
+    messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
+  }, [messages, isTyping]);
 
-  // ------------------- api helpers -------------------
+  // -------------------------
+  // API calls
+  // -------------------------
+
   async function loadAgents() {
     try {
       const res = await fetch(`${API_BASE}/agents`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error(`Failed to fetch agents: ${res.status}`);
       const data = await res.json();
-      // data shape: { agentKey: { name, description, capabilities } }
       setAgents(data || {});
-      // pick first agent if none selected
-      if (!selectedAgent) {
-        const first = Object.keys(data || {})[0];
-        setSelectedAgent(first || "general");
+      // set selected agent to first key if not set
+      const keys = Object.keys(data || {});
+      if (!selectedAgent && keys.length > 0) {
+        setSelectedAgent(keys[0]);
+      } else if (!selectedAgent) {
+        setSelectedAgent("general");
       }
     } catch (e) {
-      console.warn("loadAgents:", e);
+      console.warn("loadAgents error", e);
+      // Keep selectedAgent default
     }
   }
 
   async function loadConversations() {
     try {
       const res = await fetch(`${API_BASE}/conversations`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("Failed to load conversations");
       const data = await res.json();
       setConversations(Array.isArray(data) ? data : []);
       if (!currentConversation && Array.isArray(data) && data.length > 0) {
         setCurrentConversation(data[0]);
       }
     } catch (e) {
-      console.warn("loadConversations:", e);
+      console.warn("loadConversations error", e);
     }
   }
 
   async function loadConversation(id) {
     try {
       const res = await fetch(`${API_BASE}/conversations/${id}`);
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("Failed to load conversation");
       const json = await res.json();
       setCurrentConversation(json.conversation || { id });
       setMessages(json.messages || []);
     } catch (e) {
-      console.warn("loadConversation:", e);
+      console.warn("loadConversation error", e);
     }
   }
 
@@ -133,39 +375,166 @@ export default function ChatInterface() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: "New Conversation" }),
       });
-      if (!res.ok) return;
+      if (!res.ok) throw new Error("Failed to create");
       const json = await res.json();
       setCurrentConversation(json);
       setMessages([]);
       await loadConversations();
     } catch (e) {
-      console.error("createNewConversation", e);
+      console.warn("createNewConversation error", e);
     }
   }
 
-  // ------------------- message editing -------------------
+  async function deleteConversation(conversation) {
+    if (!conversation?.id) return;
+    if (!confirm("Delete this conversation?")) return;
+    try {
+      const res = await fetch(`${API_BASE}/conversations/${conversation.id}`, { method: "DELETE" });
+      if (!res.ok) throw new Error("Failed to delete conversation");
+      // Remove from ui
+      setConversations((prev) => prev.filter((c) => c.id !== conversation.id));
+      if (currentConversation?.id === conversation.id) {
+        setCurrentConversation(null);
+        setMessages([]);
+      }
+    } catch (e) {
+      console.warn("deleteConversation error", e);
+      alert("Failed to delete conversation");
+    }
+  }
+
+  async function exportConversationPDF(conversation) {
+    if (!conversation?.id) return;
+    try {
+      const res = await fetch(`${API_BASE}/conversations/${conversation.id}/pdf`);
+      if (!res.ok) {
+        // fallback to text export endpoint
+        const t = await (await fetch(`${API_BASE}/conversations/${conversation.id}/export`)).json();
+        const blob = new Blob([t.export_text], { type: "text/plain" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = `conversation-${conversation.id}.txt`;
+        a.click();
+        URL.revokeObjectURL(url);
+        return;
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `conversation-${conversation.id}.pdf`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch (e) {
+      console.warn("exportConversationPDF error", e);
+      alert("Export failed");
+    }
+  }
+
+  async function shareConversation(conversation) {
+    if (!conversation?.id) return;
+    try {
+      const res = await fetch(`${API_BASE}/conversations/${conversation.id}/export`);
+      if (!res.ok) throw new Error("Share failed");
+      const data = await res.json();
+      const text = data.export_text || JSON.stringify(data.share_data || {});
+      if (navigator.share) {
+        await navigator.share({ title: conversation.title || "Conversation", text });
+      } else {
+        await navigator.clipboard.writeText(text);
+        alert("Conversation copied to clipboard");
+      }
+    } catch (e) {
+      console.warn("shareConversation error", e);
+      alert("Failed to share conversation");
+    }
+  }
+
+  // -------------------------
+  // Messages / editor / send
+  // -------------------------
+
+  function startEdit(msg) {
+    if (!msg) return;
+    setEditingId(msg.id);
+    setEditingText(msg.content || "");
+    // focus handled by input
+  }
+
   async function saveEditedMessage(id, newContent) {
+    // optimistic UI update
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: newContent } : m)));
     setEditingId(null);
     setEditingText("");
+
+    // optional backend call - may not exist
     try {
-      // optional endpoint
       const res = await fetch(`${API_BASE}/messages/${id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ content: newContent }),
       });
       if (!res.ok) {
-        console.warn("server rejected message edit", await res.text());
+        console.warn("edit message not supported on server or failed", await res.text());
       }
     } catch (e) {
       console.warn("saveEditedMessage error", e);
     }
   }
 
-  // ------------------- sending (optimistic) -------------------
+  async function deleteMessage(msg) {
+    // optimistic UI
+    setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+    try {
+      const res = await fetch(`${API_BASE}/messages/${msg.id}`, { method: "DELETE" });
+      if (!res.ok) {
+        console.warn("server delete message failed", await res.text());
+      }
+    } catch (e) {
+      console.warn("deleteMessage error", e);
+    }
+  }
+
+  function copyTextToClipboard(text) {
+    if (!text) return;
+    navigator.clipboard.writeText(text).catch((e) => console.warn("copy failed", e));
+  }
+
+  async function reactMessage(id, reaction) {
+    // optimistic UI: find message and bump counts
+    setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, likes: reaction === "like" ? (m.likes || 0) + 1 : m.likes || 0, dislikes: reaction === "dislike" ? (m.dislikes || 0) + 1 : m.dislikes || 0 } : m)));
+    // optional server call
+    try {
+      const res = await fetch(`${API_BASE}/messages/${id}/reaction`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reaction }),
+      });
+      if (!res.ok) {
+        console.warn("server reaction failed", await res.text());
+      }
+    } catch (e) {
+      console.warn("reactMessage error", e);
+    }
+  }
+
+  function replyToMessage(msg) {
+    if (!msg) return;
+    setInputMessage((prev) => `${prev}${prev ? " " : ""}@reply: ${msg.content.slice(0, 120)} `);
+    // focus input ideally
+    const el = document.querySelector("textarea[data-rockbot-input]");
+    el?.focus?.();
+  }
+
+  /**
+   * sendMessage: central function to send
+   * - supports optimistic user message
+   * - supports filePayload objects returned by file uploader (localUrl, name, data)
+   */
   async function sendMessage(editId = null, filePayload = null) {
-    const content = editId ? editingText : inputMessage.trim();
+    const content = editId ? editingText.trim() : inputMessage.trim();
+
     if (!content && !filePayload) return;
 
     if (editId) {
@@ -173,6 +542,7 @@ export default function ChatInterface() {
       return;
     }
 
+    // optimistic user message
     const tmpId = uid("tmp-");
     const userMessage = {
       id: tmpId,
@@ -187,20 +557,18 @@ export default function ChatInterface() {
 
     setMessages((prev) => [...prev, userMessage]);
     setInputMessage("");
-    setAutoscroll(true);
     setIsLoading(true);
     setIsTyping(true);
 
     try {
+      // request body
       const body = {
         message: content,
         conversation_id: currentConversation?.id,
         agent_type: selectedAgent,
       };
 
-      if (filePayload?.data?.url) {
-        body.file = filePayload.data;
-      }
+      if (filePayload?.data) body.file = filePayload.data;
 
       const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
@@ -208,265 +576,290 @@ export default function ChatInterface() {
         body: JSON.stringify(body),
       });
 
+      if (!res.ok) {
+        // failure fallback
+        const errText = await res.text();
+        throw new Error(`Chat failed: ${errText}`);
+      }
+
       const json = await res.json();
 
-      // mark tmp message as sent
-      setMessages((prev) => prev.map((m) => (m.id === tmpId ? { ...m, sending: false, id: json?.user_message_id || m.id } : m)));
+      // replace tmp message (sending) with server id if returned
+      setMessages((prev) => prev.map((m) => (m.id === tmpId ? { ...m, sending: false, id: json?.user_message?.id || json?.user_message_id || m.id } : m)));
 
-      // attach assistant responses (can be string / object / array)
+      // attach assistant response(s)
       if (json?.ai_response) {
         const aiList = Array.isArray(json.ai_response) ? json.ai_response : [json.ai_response];
-        const toAppend = aiList.map((r) =>
-          typeof r === "string"
-            ? { id: uid("ai-"), role: "assistant", content: r, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 }
-            : { ...r, id: r.id || uid("ai-"), likes: r.likes || 0, dislikes: r.dislikes || 0 }
-        );
+        const toAppend = aiList.map((r) => {
+          if (typeof r === "string") {
+            return { id: uid("ai-"), role: "assistant", content: r, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 };
+          } else {
+            // if server returns message object
+            return { id: r.id || uid("ai-"), role: "assistant", content: r.content || r.text || JSON.stringify(r).slice(0, 300), timestamp: r.timestamp || new Date().toISOString(), likes: r.likes || 0, dislikes: r.dislikes || 0 };
+          }
+        });
         setMessages((prev) => [...prev, ...toAppend]);
       } else {
-        // fallback
+        // fallback assistant message
         setMessages((prev) => [
           ...prev,
-          { id: uid("ai-"), role: "assistant", content: "No assistant response.", timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
+          { id: uid("ai-"), role: "assistant", content: json?.response || "No response.", timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
         ]);
       }
 
-      // if conversation created, set
+      // if new conversation created by server, update current conversation
       if (!currentConversation && json?.conversation_id) {
         setCurrentConversation({ id: json.conversation_id });
+        await loadConversations();
+      } else {
+        // else refresh conversations list to update timestamps
         await loadConversations();
       }
     } catch (err) {
       console.error("sendMessage error", err);
       setMessages((prev) => [
         ...prev,
-        { id: uid("ai-err"), role: "assistant", content: "Failed to send message. Try again.", timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
+        { id: uid("ai-err"), role: "assistant", content: `Sorry — I couldn't send the message: ${err.message}`, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
       ]);
     } finally {
       setIsLoading(false);
-      setTimeout(() => setIsTyping(false), 300);
+      setTimeout(() => setIsTyping(false), 200);
     }
   }
 
-  // ------------------- reactions, delete, copy -------------------
-  async function reactMessage(id, reaction) {
-    setMessages((prev) =>
-      prev.map((m) => (m.id === id ? { ...m, likes: reaction === "like" ? (m.likes || 0) + 1 : m.likes || 0, dislikes: reaction === "dislike" ? (m.dislikes || 0) + 1 : m.dislikes || 0 } : m))
-    );
-    try {
-      await fetch(`${API_BASE}/messages/${id}/reaction`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ reaction }),
-      });
-    } catch (e) {
-      console.warn("reaction failed", e);
-    }
-  }
-
-  async function deleteMessage(msg) {
-    setMessages((prev) => prev.filter((m) => m.id !== msg.id));
-    try {
-      await fetch(`${API_BASE}/messages/${msg.id}`, { method: "DELETE" });
-    } catch (e) {
-      console.warn("delete failed", e);
-    }
-  }
-
-  function copyTextToClipboard(text) {
-    navigator.clipboard
-      .writeText(text)
-      .catch((e) => console.warn("Clipboard write failed", e));
-  }
-
-  // ------------------- file upload integration -------------------
-  async function onFileUploadComplete(result) {
-    // both success and failure return here
-    if (!result) return;
-    // send as a message with filePayload
-    await sendMessage(null, result);
-  }
-
-  // ------------------- helper UI actions -------------------
-  function startEdit(msg) {
-    setEditingId(msg.id);
-    setEditingText(msg.content || "");
-    // optionally focus input
-  }
-
-  function cancelEdit() {
-    setEditingId(null);
-    setEditingText("");
-  }
-
+  // -------------------------
+  // UI Actions & small helpers
+  // -------------------------
   function toggleSidebar() {
     setShowSidebar((s) => !s);
   }
 
-  // quick scroll to bottom button
-  function scrollToBottom() {
-    messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
-  }
+  const handleKeyDown = (e) => {
+    if (e.key === "Enter" && !e.shiftKey) {
+      e.preventDefault();
+      sendMessage();
+    }
+  };
 
-  // ------------------- UI render -------------------
+  // -------------------------
+  // Render
+  // -------------------------
   return (
-    <div className="min-h-screen w-full flex items-center justify-center p-4 bg-gradient-to-b from-gray-50 to-gray-100 dark:from-gray-900 dark:to-gray-800">
-      <div className="w-full max-w-5xl h-[92vh] rounded-2xl overflow-hidden shadow-2xl border border-white/10 bg-white/60 dark:bg-gray-900/60 backdrop-blur-lg flex">
-        {/* sidebar */}
-        <div className={`w-80 bg-white/30 dark:bg-gray-900/40 border-r border-gray-200/10 transition-transform ${showSidebar ? "translate-x-0" : "-translate-x-full sm:translate-x-0"}`}>
-          <Sidebar
-            conversations={conversations}
-            currentConversation={currentConversation}
-            onSelectConversation={(c) => {
-              setCurrentConversation(c);
-              loadConversation(c.id);
-            }}
-            onNewConversation={createNewConversation}
-            onToggleMobile={() => toggleSidebar()}
-          />
+    <div className="min-h-screen w-full flex items-center justify-center p-2 bg-gradient-to-b from-gray-900 to-gray-800 text-white">
+      <div className="w-full max-w-6xl h-[92vh] rounded-2xl overflow-hidden bg-[#0f1724] border border-white/5 flex shadow-2xl">
+        {/* Sidebar */}
+        <div className={`bg-[#0b1220] border-r border-white/5 transition-transform ${showSidebar ? "w-80" : "w-0 overflow-hidden"}`}>
+          {/* Try to render imported Sidebar if it expects props; otherwise fallback to LocalSidebar */}
+          {/* We pass handlers in case your Sidebar uses them. If it doesn't, LocalSidebar below ensures actions exist. */}
+          <div className="h-full">
+            {/* If your Sidebar component expects different props, it will simply ignore extras. */}
+            {/* Render both: imported Sidebar (if present) and fallback list. */}
+            <div className="hidden">
+              {/* keep import usage so bundler doesn't tree-shake the import away; but hidden */}
+              <Sidebar
+                conversations={conversations}
+                currentConversation={currentConversation}
+                onSelectConversation={(c) => {
+                  setCurrentConversation(c);
+                  loadConversation(c.id);
+                }}
+                onNewConversation={createNewConversation}
+                onDeleteConversation={deleteConversation}
+                onExportConversation={exportConversationPDF}
+                onShareConversation={shareConversation}
+                onToggleMobile={toggleSidebar}
+              />
+            </div>
+
+            {/* Visible fallback sidebar */}
+            <LocalSidebar
+              conversations={conversations}
+              currentConversation={currentConversation}
+              onSelect={(c) => {
+                setCurrentConversation(c);
+                loadConversation(c.id);
+              }}
+              onNew={createNewConversation}
+              onDelete={deleteConversation}
+              onExport={exportConversationPDF}
+              onShare={shareConversation}
+              onToggleMobile={toggleSidebar}
+            />
+          </div>
         </div>
 
-        {/* main */}
+        {/* Main */}
         <div className="flex-1 flex flex-col">
-          <div className="px-4 py-3 border-b border-gray-200/10 bg-white/50 dark:bg-gray-900/50 flex items-center justify-between">
+          {/* Header */}
+          <div className="px-4 py-3 border-b border-white/5 bg-[#061124] flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <div className="text-2xl font-bold">Rockbot</div>
-              <div className="text-sm text-gray-500 dark:text-gray-400">{currentConversation?.title || "No conversation selected"}</div>
+              <button onClick={toggleSidebar} className="px-2 py-1 border rounded bg-white/5">
+                ☰
+              </button>
+              <div className="text-xl font-bold">Rockbot</div>
+              <div className="text-sm opacity-80">{currentConversation?.title || "No conversation selected"}</div>
             </div>
 
             <div className="flex items-center gap-3">
-              <ChatHeaderExtras
-                agent={agents[selectedAgent]}
-                onExport={async () => {
-                  if (!currentConversation) return;
-                  try {
-                    const resp = await fetch(`${API_BASE}/conversations/${currentConversation.id}/pdf`);
-                    if (resp.ok) {
-                      const blob = await resp.blob();
-                      const url = URL.createObjectURL(blob);
-                      const a = document.createElement("a");
-                      a.href = url;
-                      a.download = `conversation-${currentConversation.id}.pdf`;
-                      a.click();
-                    } else {
-                      alert("Export failed");
-                    }
-                  } catch (e) {
-                    alert("Export failed: " + e.message);
-                  }
-                }}
-                onShare={async () => {
-                  if (!currentConversation) return;
-                  try {
-                    const res = await fetch(`${API_BASE}/conversations/${currentConversation.id}/export`);
-                    const data = await res.json();
-                    if (navigator.share) {
-                      navigator.share({ title: "Conversation", text: data.export_text });
-                    } else {
-                      navigator.clipboard.writeText(data.export_text || "");
-                      alert("Conversation copied to clipboard");
-                    }
-                  } catch (e) {
-                    console.warn(e);
-                  }
-                }}
-                theme={theme}
-                setTheme={setTheme}
-              />
+              {/* Agent selector */}
+              <AgentSelector agents={agents} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} />
 
+              {/* theme toggle */}
               <button
-                onClick={() => setAutoscroll((v) => !v)}
-                title={autoscroll ? "Auto-scroll: ON" : "Auto-scroll: OFF (click to enable)"}
-                className={`p-2 rounded ${autoscroll ? "bg-green-100/60" : "bg-gray-100/40"} hover:scale-105`}
+                onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+                title="Toggle theme"
+                className="px-2 py-1 rounded border bg-white/5"
               >
-                <ChevronDown className="w-4 h-4" />
+                {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
               </button>
+
+              {/* Export/share buttons */}
+              <div className="flex gap-1">
+                <button
+                  title="Export conversation"
+                  onClick={() => exportConversationPDF(currentConversation)}
+                  className="p-1 rounded border"
+                >
+                  <Download className="w-4 h-4" />
+                </button>
+                <button
+                  title="Share conversation"
+                  onClick={() => shareConversation(currentConversation)}
+                  className="p-1 rounded border"
+                >
+                  <Share2 className="w-4 h-4" />
+                </button>
+              </div>
             </div>
           </div>
 
-          {/* content */}
+          {/* Content */}
           <div className="flex-1 min-h-0 relative">
             {!currentConversation ? (
-              <EmptyState onCreate={createNewConversation} />
+              <div className="h-full flex items-center justify-center">
+                <EmptyState onCreate={createNewConversation} />
+              </div>
             ) : (
               <div className="h-full flex flex-col">
-                <ScrollArea ref={scrollAreaRef} className="flex-1 p-6">
+                <div ref={scrollAreaRef} className="flex-1 overflow-auto p-6">
                   <div className="mx-auto max-w-4xl">
-                    <ChatContainer>
-                      {messages.length === 0 && !isTyping && (
-                        <div className="text-center text-sm text-gray-500 dark:text-gray-300 py-12">No messages yet — start the conversation below.</div>
-                      )}
-
-                      {messages.map((m) => {
-                        const isOwn = m.role === "user";
-                        return (
-                          <div key={m.id || m._id} className={`w-full ${isOwn ? "flex justify-end" : "flex justify-start"} py-1`}>
-                            <div className="w-full max-w-[78%]">
-                              {editingId === m.id ? (
-                                <div className={`flex gap-2 ${isOwn ? "justify-end" : "justify-start"}`}>
-                                  <input
-                                    value={editingText}
-                                    onChange={(e) => setEditingText(e.target.value)}
-                                    className="flex-1 p-3 rounded-lg border border-gray-200/30 bg-white/80 dark:bg-gray-800/70"
-                                    onKeyDown={(e) => {
-                                      if (e.key === "Enter" && !e.shiftKey) saveEditedMessage(m.id, editingText);
-                                      if (e.key === "Escape") cancelEdit();
-                                    }}
-                                  />
+                    <div className="flex flex-col gap-2">
+                      {/* Messages */}
+                      {messages.length === 0 && !isTyping ? (
+                        <div className="text-center text-sm opacity-70 py-8">No messages yet — start the conversation below.</div>
+                      ) : (
+                        messages.map((m) => {
+                          const isOwn = m.role === "user";
+                          // If editing this message, show inline edit box (user messages only)
+                          if (editingId === m.id && isOwn) {
+                            return (
+                              <div key={m.id || uid("editing-")} className={`w-full flex ${isOwn ? "justify-end" : "justify-start"} py-1`}>
+                                <div className="max-w-[78%]">
                                   <div className="flex gap-2">
-                                    <Button onClick={() => saveEditedMessage(m.id, editingText)}>Save</Button>
-                                    <Button onClick={cancelEdit} className="bg-gray-100 dark:bg-gray-800">Cancel</Button>
+                                    <textarea
+                                      value={editingText}
+                                      onChange={(e) => setEditingText(e.target.value)}
+                                      rows={3}
+                                      className="w-full p-3 rounded-lg bg-white/5"
+                                    />
+                                    <div className="flex flex-col gap-2">
+                                      <Button onClick={() => saveEditedMessage(m.id, editingText)}>Save</Button>
+                                      <Button onClick={() => { setEditingId(null); setEditingText(""); }} variant="secondary">Cancel</Button>
+                                    </div>
                                   </div>
                                 </div>
-                              ) : (
+                              </div>
+                            );
+                          }
+
+                          // For assistant messages, provide like/dislike/copy/reply
+                          if (!isOwn) {
+                            return (
+                              <div key={m.id || uid("a-")} className={`w-full ${isOwn ? "flex justify-end" : "flex justify-start"} py-1`}>
+                                <div className="w-full max-w-[78%]">
+                                  {/* Use imported Message component if available (expected to render nicely).
+                                      If your imported Message ignores props, our MessageBubble ensures actions exist. */}
+                                  <div className="mb-1">
+                                    <Message
+                                      message={m}
+                                      isOwn={isOwn}
+                                      onCopy={() => copyTextToClipboard(m.content)}
+                                      onLike={() => reactMessage(m.id, "like")}
+                                      onDislike={() => reactMessage(m.id, "dislike")}
+                                      onReply={() => replyToMessage(m)}
+                                      showAvatar
+                                      showToolbar={false} // we render our own toolbar to ensure correct actions
+                                    />
+                                  </div>
+
+                                  {/* Fallback toolbar to guarantee correct assistant controls */}
+                                  <div className="flex gap-2">
+                                    <button onClick={() => copyTextToClipboard(m.content)} title="Copy" className="p-2 rounded border bg-white/5">
+                                      <Copy className="w-4 h-4" />
+                                    </button>
+                                    <button onClick={() => reactMessage(m.id, "like")} title="Like" className="p-2 rounded border bg-white/5">👍</button>
+                                    <button onClick={() => reactMessage(m.id, "dislike")} title="Dislike" className="p-2 rounded border bg-white/5">👎</button>
+                                    <button onClick={() => replyToMessage(m)} title="Reply" className="p-2 rounded border bg-white/5">↩</button>
+                                  </div>
+                                </div>
+                              </div>
+                            );
+                          }
+
+                          // For user messages, show edit/delete
+                          return (
+                            <div key={m.id || uid("u-")} className={`w-full ${isOwn ? "flex justify-end" : "flex justify-start"} py-1`}>
+                              <div className="w-full max-w-[78%]">
                                 <Message
                                   message={m}
                                   isOwn={isOwn}
-                                  onCopy={(msg) => copyTextToClipboard(msg.content)}
-                                  onEdit={(msg) => startEdit(msg)}
-                                  onLike={(msg) => reactMessage(msg.id, "like")}
-                                  onDislike={(msg) => reactMessage(msg.id, "dislike")}
-                                  onDelete={(msg) => deleteMessage(msg)}
+                                  onCopy={() => copyTextToClipboard(m.content)}
+                                  onEdit={() => startEdit(m)}
+                                  onDelete={() => deleteMessage(m)}
                                   showAvatar
                                   showToolbar
                                 />
-                              )}
+                              </div>
                             </div>
-                          </div>
-                        );
-                      })}
+                          );
+                        })
+                      )}
 
-                      {isTyping && <div className="py-2"><TypingIndicator agentName={agents[selectedAgent]?.name || "Assistant"} /></div>}
+                      {isTyping && (
+                        <div className="py-2">
+                          <TypingIndicator agentName={agents[selectedAgent]?.name || "Assistant"} />
+                        </div>
+                      )}
 
                       <div ref={messagesEndRef} />
-                    </ChatContainer>
+                    </div>
                   </div>
-                </ScrollArea>
+                </div>
 
-                {/* input row */}
-                <div className="p-4 border-t border-gray-200/10 bg-white/80 dark:bg-gray-900/70 backdrop-blur-sm">
+                {/* Input / actions */}
+                <div className="px-4 py-3 border-t border-white/5 bg-[#061124]">
                   <div className="max-w-4xl mx-auto flex items-center gap-3">
-                    <FileUploader onUploadComplete={onFileUploadComplete} />
+                    {/* File uploader (inline) */}
+                    <FileUploaderInline onUploadComplete={async (payload) => {
+                      // payload: { localUrl, name, data }
+                      if (!payload) return;
+                      // send as message with attachment
+                      await sendMessage(null, payload);
+                    }} />
 
+                    {/* Message input */}
                     <div className="flex-1">
-                      <Input
+                      <textarea
+                        data-rockbot-input
                         value={editingId ? editingText : inputMessage}
                         onChange={(e) => (editingId ? setEditingText(e.target.value) : setInputMessage(e.target.value))}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter" && !e.shiftKey) {
-                            e.preventDefault();
-                            sendMessage(editingId || null);
-                          } else if (e.key === "Escape" && editingId) {
-                            cancelEdit();
-                          }
-                        }}
+                        onKeyDown={handleKeyDown}
                         placeholder={editingId ? "Editing message..." : "Type your message... (Shift+Enter for newline)"}
-                        className="w-full"
-                        aria-label="Chat input"
-                        disabled={isLoading}
+                        className="w-full p-3 rounded bg-white/5 min-h-[44px] max-h-28 resize-none outline-none"
                       />
                     </div>
 
-                    <div>
+                    <div className="flex gap-2">
                       <Button onClick={() => sendMessage(editingId || null)} disabled={isLoading || (!inputMessage && !editingText)}>
                         {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                       </Button>
@@ -474,16 +867,6 @@ export default function ChatInterface() {
                   </div>
                 </div>
 
-                {/* floating quick-scroll */}
-                <div className="absolute right-6 bottom-24">
-                  <button
-                    onClick={scrollToBottom}
-                    title="Jump to latest"
-                    className="p-3 rounded-full bg-white/80 dark:bg-gray-800/60 shadow hover:scale-105"
-                  >
-                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
-                  </button>
-                </div>
               </div>
             )}
           </div>
@@ -492,3 +875,4 @@ export default function ChatInterface() {
     </div>
   );
 }
+// frontend/rockbot-ui/src/components/ChatInterface.jsx 
