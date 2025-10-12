@@ -9,7 +9,7 @@ from typing import List, Dict, Any, Optional
 # ---------------------------------------------------
 #  ROCKBOT AI SERVICE - ADVANCED MULTI-AGENT (OpenRouter Edition)
 # ---------------------------------------------------
-# ✨ Features:
+
 #  ✅ Automatic model switching based on agent type
 #  ✅ Smart rate-limit retry + exponential backoff
 #  ✅ Memory caching (limited)
