@@ -3,7 +3,6 @@ from src.extensions import db
 from src.models.conversation import Conversation, Message
 from src.services.ai_service import rockbot_ai
 import json
-import asyncio
 from datetime import datetime
 
 chat_bp = Blueprint('chat', __name__)
@@ -13,6 +12,7 @@ def get_conversations():
     """Get all conversations"""
     conversations = Conversation.query.order_by(Conversation.updated_at.desc()).all()
     return jsonify([conv.to_dict() for conv in conversations])
+
 
 @chat_bp.route('/conversations', methods=['POST'])
 def create_conversation():
@@ -26,6 +26,7 @@ def create_conversation():
     
     return jsonify(conversation.to_dict()), 201
 
+
 @chat_bp.route('/conversations/<int:conversation_id>', methods=['GET'])
 def get_conversation(conversation_id):
     """Get a specific conversation with messages"""
@@ -37,6 +38,7 @@ def get_conversation(conversation_id):
         'messages': [msg.to_dict() for msg in messages]
     })
 
+
 @chat_bp.route('/conversations/<int:conversation_id>', methods=['DELETE'])
 def delete_conversation(conversation_id):
     """Delete a conversation"""
@@ -45,6 +47,7 @@ def delete_conversation(conversation_id):
     db.session.commit()
     
     return jsonify({'message': 'Conversation deleted successfully'})
+
 
 @chat_bp.route('/conversations/<int:conversation_id>/messages', methods=['POST'])
 def add_message(conversation_id):
@@ -71,6 +74,7 @@ def add_message(conversation_id):
     db.session.commit()
     
     return jsonify(message.to_dict()), 201
+
 
 @chat_bp.route('/chat', methods=['POST'])
 def chat():
@@ -100,22 +104,16 @@ def chat():
     )
     db.session.add(user_message)
     
-    # Generate AI response using the AI service
+    # Generate AI response (synchronous call — no async loop)
     try:
-        # Run async function in sync context
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
-        ai_result = loop.run_until_complete(
-            rockbot_ai.generate_response(message, conversation_id, agent_type)
-        )
-        loop.close()
+        ai_result = rockbot_ai.generate_response(message, conversation_id, agent_type)
         
-        ai_response = ai_result['response']
+        ai_response = ai_result.get('response', 'No response generated.')
         metadata = {
             'agent_used': ai_result.get('agent_used'),
             'agent_name': ai_result.get('agent_name'),
             'capabilities': ai_result.get('capabilities'),
-            'success': ai_result.get('success')
+            'success': ai_result.get('success', True)
         }
         
     except Exception as e:
@@ -140,6 +138,7 @@ def chat():
         'ai_response': ai_message.to_dict()
     })
 
+
 @chat_bp.route('/translate', methods=['POST'])
 def translate():
     """Translation endpoint"""
@@ -154,6 +153,7 @@ def translate():
     result = rockbot_ai.translate_text(text, target_language, source_language)
     return jsonify(result)
 
+
 @chat_bp.route('/task', methods=['POST'])
 def execute_task():
     """Autonomous task execution endpoint"""
@@ -166,6 +166,7 @@ def execute_task():
     result = rockbot_ai.execute_autonomous_task(task_description)
     return jsonify(result)
 
+
 @chat_bp.route('/agents', methods=['GET'])
 def get_agents():
     """Get available AI agents"""
@@ -177,6 +178,7 @@ def get_agents():
         }
     
     return jsonify(agents_info)
+
 
 @chat_bp.route('/conversations/<int:conversation_id>/export', methods=['GET'])
 def export_conversation(conversation_id):
