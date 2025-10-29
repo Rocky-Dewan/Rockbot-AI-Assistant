@@ -1,71 +1,60 @@
-// frontend/rockbot-ui/src/components/ui/button.jsx
+import * as React from "react";
+import { Slot } from "@radix-ui/react-slot";
+import { cva, type VariantProps } from "class-variance-authority";
 
-import React, { forwardRef } from "react";
-import clsx from "clsx";
+import { cn } from "@/lib/utils";
 
-/**
- * Universal Button component with size, variant, and loading states.
- * Supports icons, accessibility labels, and keyboard focus styling.
- */
-export const Button = forwardRef(
-  (
-    {
-      children,
-      variant = "primary",
-      size = "md",
-      icon,
-      loading = false,
-      disabled = false,
-      className = "",
-      type = "button",
-      ...props
+const buttonVariants = cva(
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap rounded-md text-sm font-medium transition-all disabled:pointer-events-none disabled:opacity-50 [&_svg]:pointer-events-none [&_svg:not([class*='size-'])]:size-4 shrink-0 [&_svg]:shrink-0 outline-none focus-visible:border-ring focus-visible:ring-ring/50 focus-visible:ring-[3px] aria-invalid:ring-destructive/20 dark:aria-invalid:ring-destructive/40 aria-invalid:border-destructive",
+  {
+    variants: {
+      variant: {
+        default: "bg-primary text-primary-foreground hover:bg-primary/90",
+        destructive:
+          "bg-destructive text-white hover:bg-destructive/90 focus-visible:ring-destructive/20 dark:focus-visible:ring-destructive/40 dark:bg-destructive/60",
+        outline:
+          "border bg-transparent shadow-xs hover:bg-accent dark:bg-transparent dark:border-input dark:hover:bg-input/50",
+        secondary:
+          "bg-secondary text-secondary-foreground hover:bg-secondary/80",
+        ghost:
+          "hover:bg-accent dark:hover:bg-accent/50",
+        link: "text-primary underline-offset-4 hover:underline",
+      },
+      size: {
+        default: "h-9 px-4 py-2 has-[>svg]:px-3",
+        sm: "h-8 rounded-md gap-1.5 px-3 has-[>svg]:px-2.5",
+        lg: "h-10 rounded-md px-6 has-[>svg]:px-4",
+        icon: "size-9",
+        "icon-sm": "size-8",
+        "icon-lg": "size-10",
+      },
     },
-    ref
-  ) => {
-    const base =
-      "relative inline-flex items-center justify-center gap-2 font-medium transition-all focus:outline-none rounded-xl active:scale-[0.97] disabled:opacity-60 disabled:pointer-events-none";
-
-    const sizes = {
-      sm: "px-3 py-1.5 text-sm",
-      md: "px-4 py-2.5 text-base",
-      lg: "px-6 py-3 text-lg",
-    };
-
-    const variants = {
-      primary:
-        "bg-gradient-to-r from-blue-500 to-indigo-600 text-white shadow-lg hover:shadow-xl hover:from-blue-600 hover:to-indigo-700",
-      secondary:
-        "bg-white/10 text-white border border-white/20 backdrop-blur-md hover:bg-white/20",
-      ghost:
-        "bg-transparent text-gray-700 hover:bg-gray-100 dark:text-gray-300 dark:hover:bg-gray-800/50",
-      danger:
-        "bg-gradient-to-r from-red-500 to-pink-600 text-white shadow-md hover:from-red-600 hover:to-pink-700",
-      success:
-        "bg-gradient-to-r from-green-500 to-emerald-600 text-white shadow-md hover:from-green-600 hover:to-emerald-700",
-      outline:
-        "border border-gray-300 dark:border-gray-700 text-gray-800 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-800/50",
-    };
-
-    return (
-      <button
-        ref={ref}
-        type={type}
-        className={clsx(base, sizes[size], variants[variant], className)}
-        aria-busy={loading}
-        disabled={loading || disabled}
-        {...props}
-      >
-        {loading && (
-          <span
-            className="animate-spin rounded-full h-4 w-4 border-2 border-t-transparent border-white"
-            aria-hidden="true"
-          ></span>
-        )}
-        {icon && !loading && <span className="text-lg">{icon}</span>}
-        {!loading && <span>{children}</span>}
-      </button>
-    );
+    defaultVariants: {
+      variant: "default",
+      size: "default",
+    },
   }
 );
 
-Button.displayName = "Button";
+function Button({
+  className,
+  variant,
+  size,
+  asChild = false,
+  ...props
+}: React.ComponentProps<"button"> &
+  VariantProps<typeof buttonVariants> & {
+    asChild?: boolean;
+  }) {
+  const Comp = asChild ? Slot : "button";
+
+  return (
+    <Comp
+      data-slot="button"
+      className={cn(buttonVariants({ variant, size, className }))}
+      {...props}
+    />
+  );
+}
+
+export { Button, buttonVariants };
