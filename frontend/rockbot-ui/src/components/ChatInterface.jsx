@@ -1,21 +1,27 @@
 // frontend/rockbot-ui/src/components/ChatInterface.jsx
-// Big, comprehensive Chat interface implementing:
-// - Multi-agent selection
-// - Conversation list with create/delete/share/export
-// - Message list with proper toolbars (user vs assistant)
-// - Optimistic updates and graceful error handling
-// - Theme (light/dark) persistence
-// - File upload integration (calls /api/upload)
-// - Safe fallbacks if some backend endpoints are missing
+// Extended, self-contained Chat interface (Option 1 - direct API calls).
+// Purpose: fix the issues you described (sidebar toggling, theme persistence,
+// agent selection, assistant toolbar restrictions, delete persistence across refresh,
+// autoscroll logic, fallback behaviors when backend endpoints missing).
 //
-// NOTE: This file intentionally is long and explicit to cover all behaviors
-// and to make debugging easy. Trim later if you prefer smaller components.
+// Notes:
+// - Uses fetch(...) to call `${API_BASE}/...` endpoints directly.
+// - If backend DELETE/message endpoints are missing, we fall back to localStorage
+//   to persist deleted-message ids per conversation so deletions survive refresh.
+// - Theme is persisted via localStorage and applies 'dark' class to <html> (tailwind dark mode 'class').
+// - Autoscroll behavior: stays on by default, but will stop when user scrolls up.
+// - Agent selection: loaded from /api/agents; fallback default agents provided locally.
+// - Message toolbar: assistant messages only have copy/like/dislike/reply; user messages have edit/delete.
+// - File upload: posts to /api/upload (multimodal), but gracefully handles backend not implementing it.
+//
+// This file intentionally contains many helpers and inline fallback UI so it can work
+// even if some ui components are missing or behave differently in your existing project.
 
 import React, { useEffect, useRef, useState } from "react";
+import { Send, Loader2, ChevronDown, Copy, Trash2, Edit3, Download, Share2, Moon, Sun } from "lucide-react";
+import { motion } from "framer-motion";
 
-// Keep these imports — your project already has these UI pieces.
-// They may be used by your app; we also build some UI inside this file
-// so the ChatInterface remains robust even if some ui/* components behave differently.
+// Try to import existing UI components if present. We will also provide fallbacks inside this file.
 import Sidebar from "@/components/ui/sidebar";
 import Header from "@/components/ui/header";
 import EmptyState from "@/components/ui/empty-state";
@@ -23,113 +29,128 @@ import ChatContainer from "@/components/ui/chat-container";
 import FileUploader from "@/components/ui/file-uploader";
 import Message from "@/components/ui/message";
 import TypingIndicator from "@/components/ui/typing-indicator";
-import ThemeToggle from "@/components/ui/theme-toggle";
-import ChatHeaderExtras from "@/components/ui/chat-header-extras";
+// Button / Input - many projects export named Button; ensure we use named import to avoid "default not exported" build errors
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 
-// Icons & motion
-import { Send, Loader2, ChevronDown, Copy, Trash2, Edit3, Download, Share2, Moon, Sun } from "lucide-react";
-import { motion } from "framer-motion";
+// If any of the imports above fail to exist at runtime bundling, our fallback UI elements in this file
+// will provide necessary UI. (During build, missing imports will break — ensure those files exist or
+// replace the import paths you don't use.)
 
-/**
- * API base detection:
- * - Prefer Vite env var VITE_API_BASE_URL (set in .env.production)
- * - If not present, fallback to relative '/api' (works when served from same origin)
- * - If the app is served from a different host than API, set the VITE_API_BASE_URL.
- */
-const ENV_API = import.meta.env?.VITE_API_BASE_URL;
+// API Base: prefer Vite env var, else fallback to '/api' which works when frontend served from same origin as backend.
+const ENV_API = typeof import.meta !== "undefined" && import.meta.env ? import.meta.env.VITE_API_BASE_URL : undefined;
 const API_BASE = ENV_API && ENV_API.length > 0 ? ENV_API.replace(/\/$/, "") : "/api";
 
-/**
- * Utility helpers
- */
+// localStorage keys
+const LS_THEME_KEY = "rockbot_theme_v1";
+const LS_DELETED_KEY = "rockbot_deleted_msgs_v1"; // stores { [conversationId]: [msgId, ...] }
+
+// ---------- Utility helpers ----------
 function uid(prefix = "") {
   return `${prefix}${Math.random().toString(36).slice(2, 9)}`;
 }
-
 function formatTime(iso) {
   if (!iso) return "";
-  const d = new Date(iso);
-  return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  try {
+    const d = new Date(iso);
+    return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  } catch {
+    return iso;
+  }
+}
+function safeParseJSON(s, fallback) {
+  try {
+    return JSON.parse(s);
+  } catch {
+    return fallback;
+  }
 }
 
-/**
- * Small local MessageBubble component so we can absolutely control the toolbar
- * appearance for assistant vs user messages. This will be used in mapping over
- * messages if your imported Message component doesn't implement exactly our logic.
- *
- * If your project's Message component is feature-complete, you can remove this local
- * component and use the imported one — we include both imports so build is safe.
- */
-function MessageBubble({ msg, isOwn, onEdit, onDelete, onCopy, onLike, onDislike, onReply }) {
-  const baseCls =
-    "rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words leading-relaxed shadow-sm";
-  const userCls = "bg-blue-600 text-white self-end";
-  const assistantCls = "bg-gray-800 text-white/90 self-start";
+// ---------- Local persistence helpers (deleted messages fallback) ----------
+function readDeletedMap() {
+  try {
+    const raw = localStorage.getItem(LS_DELETED_KEY);
+    return raw ? safeParseJSON(raw, {}) : {};
+  } catch {
+    return {};
+  }
+}
+function writeDeletedMap(map) {
+  try {
+    localStorage.setItem(LS_DELETED_KEY, JSON.stringify(map));
+  } catch {}
+}
+function markMessageDeletedLocally(conversationId, msgId) {
+  const map = readDeletedMap();
+  if (!map[conversationId]) map[conversationId] = [];
+  if (!map[conversationId].includes(msgId)) map[conversationId].push(msgId);
+  writeDeletedMap(map);
+}
+function isMessageLocallyDeleted(conversationId, msgId) {
+  const map = readDeletedMap();
+  return Array.isArray(map[conversationId]) && map[conversationId].includes(msgId);
+}
+function removeLocalDeletedMark(conversationId, msgId) {
+  const map = readDeletedMap();
+  if (!map[conversationId]) return;
+  map[conversationId] = map[conversationId].filter((id) => id !== msgId);
+  writeDeletedMap(map);
+}
 
+// ---------- Fallback default agents (if /api/agents is missing) ----------
+const FALLBACK_AGENTS = {
+  general: { name: "General Assistant", description: "General purpose assistant." },
+  translator: { name: "Translator", description: "Translate text across languages." },
+  creative: { name: "Creative Writer", description: "Generates creative content." },
+  coder: { name: "Code Assistant", description: "Helps with coding tasks." },
+};
+
+// ---------- Message Bubble (fallback) ----------
+// Keeps consistent toolbar for assistant vs user messages.
+function MessageBubble({
+  msg,
+  isOwn,
+  onEdit,
+  onDelete,
+  onCopy,
+  onLike,
+  onDislike,
+  onReply,
+  showAvatar = true,
+}) {
+  const containerClass = isOwn ? "justify-end" : "justify-start";
+  const bubbleClass = isOwn ? "bg-blue-600 text-white" : "bg-gray-800 text-white/95";
   return (
-    <div className={`flex ${isOwn ? "justify-end" : "justify-start"} py-1`}>
-      <div className={`max-w-[78%] flex flex-col ${isOwn ? "items-end" : "items-start"}`}>
-        <div className={`${baseCls} ${isOwn ? userCls : assistantCls}`}>
-          {/* message content */}
+    <div className={`w-full flex ${containerClass} py-1`}>
+      <div className="max-w-[78%] flex flex-col">
+        <div className={`rounded-lg px-3 py-2 text-sm whitespace-pre-wrap break-words ${bubbleClass} shadow-sm`}>
           <div>{msg.content}</div>
-          {/* small timestamp */}
-          <div className="text-[10px] opacity-70 mt-1 text-right">{formatTime(msg.timestamp)}</div>
+          <div className="text-[10px] opacity-60 mt-1 text-right">{formatTime(msg.timestamp)}</div>
         </div>
 
-        {/* toolbar */}
         <div className="mt-1 flex gap-1">
           {isOwn ? (
             <>
-              <button
-                title="Edit message"
-                onClick={() => onEdit?.(msg)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Edit" onClick={() => onEdit?.(msg)} className="p-1 rounded border hover:bg-white/5">
                 <Edit3 className="w-4 h-4" />
               </button>
-
-              <button
-                title="Delete message"
-                onClick={() => onDelete?.(msg)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Delete" onClick={() => onDelete?.(msg)} className="p-1 rounded border hover:bg-white/5">
                 <Trash2 className="w-4 h-4" />
               </button>
             </>
           ) : (
             <>
-              <button
-                title="Copy"
-                onClick={() => onCopy?.(msg.content)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Copy" onClick={() => onCopy?.(msg.content)} className="p-1 rounded border hover:bg-white/5">
                 <Copy className="w-4 h-4" />
               </button>
-
-              <button
-                title="Like"
-                onClick={() => onLike?.(msg)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Like" onClick={() => onLike?.(msg)} className="p-1 rounded border hover:bg-white/5">
                 👍
               </button>
-
-              <button
-                title="Dislike"
-                onClick={() => onDislike?.(msg)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Dislike" onClick={() => onDislike?.(msg)} className="p-1 rounded border hover:bg-white/5">
                 👎
               </button>
-
-              <button
-                title="Reply"
-                onClick={() => onReply?.(msg)}
-                className="p-1 rounded border hover:bg-white/5"
-              >
+              <button title="Reply" onClick={() => onReply?.(msg)} className="p-1 rounded border hover:bg-white/5">
                 ↩
               </button>
             </>
@@ -140,12 +161,17 @@ function MessageBubble({ msg, isOwn, onEdit, onDelete, onCopy, onLike, onDislike
   );
 }
 
-/**
- * Inline Sidebar rendering (fallback) — ensures delete/share/export exists even if your imported Sidebar
- * doesn't implement all actions. We will try to pass these handlers to the imported Sidebar as props, but
- * if it ignores them, this internal Sidebar below will guarantee the UX.
- */
-function LocalSidebar({ conversations, currentConversation, onSelect, onNew, onDelete, onExport, onShare, onToggleMobile }) {
+// ---------- Local Sidebar fallback UI ----------
+function LocalSidebar({
+  conversations,
+  currentConversation,
+  onSelect,
+  onNew,
+  onDelete,
+  onExport,
+  onShare,
+  onToggleMobile,
+}) {
   return (
     <div className="w-full h-full flex flex-col">
       <div className="px-3 py-3 border-b flex items-center justify-between">
@@ -192,16 +218,12 @@ function LocalSidebar({ conversations, currentConversation, onSelect, onNew, onD
   );
 }
 
-/**
- * AgentSelector UI - shows list of agents and allows picking.
- * Agents data shape expected: { agentKey: { name, capabilities, ... } }
- */
+// ---------- Agent selector ----------
 function AgentSelector({ agents, selectedAgent, setSelectedAgent }) {
   const keys = Object.keys(agents || {});
   if (keys.length === 0) {
     return <div className="text-sm text-gray-400">No agents</div>;
   }
-
   return (
     <div className="flex items-center gap-2">
       <label className="text-xs opacity-80">Agent</label>
@@ -220,63 +242,63 @@ function AgentSelector({ agents, selectedAgent, setSelectedAgent }) {
   );
 }
 
-/**
- * FileUploaderInline - a simple file input that posts to /api/upload (multimodal)
- * and returns an object `{ localUrl, name, data }` matching the expectations in sendMessage.
- */
+// ---------- File uploader inline (fallback) ----------
 function FileUploaderInline({ onUploadComplete }) {
   const fileRef = useRef(null);
 
   async function handleFile(e) {
     const file = e.target.files?.[0];
     if (!file) return;
-
-    // show local preview immediately
     const localUrl = URL.createObjectURL(file);
     const name = file.name;
-    // Basic upload: call backend
     const fd = new FormData();
     fd.append("file", file);
-
     try {
       const res = await fetch(`${API_BASE}/upload`, { method: "POST", body: fd });
       if (!res.ok) {
-        // fallback: return local info without backend metadata
         onUploadComplete?.({ localUrl, name, data: null });
         return;
       }
       const json = await res.json();
-      // Expect backend to return metadata url or similar
       onUploadComplete?.({ localUrl, name, data: json });
     } catch (e) {
-      console.warn("File upload failed", e);
+      console.warn("File upload failed:", e);
       onUploadComplete?.({ localUrl, name, data: null });
     } finally {
-      // reset input
-      fileRef.current.value = "";
+      if (fileRef.current) fileRef.current.value = "";
     }
   }
 
   return (
-    <div>
-      <input ref={fileRef} type="file" onChange={handleFile} className="hidden" id="fileuploader-inline" />
-      <label htmlFor="fileuploader-inline" className="px-3 py-1 border rounded cursor-pointer">
-        Attach
-      </label>
+    <div className="flex items-center gap-2">
+      <input ref={fileRef} type="file" onChange={handleFile} className="hidden" id="rb-file-inline" />
+      <label htmlFor="rb-file-inline" className="px-3 py-1 border rounded cursor-pointer">Attach</label>
     </div>
   );
 }
 
-/**
- * ChatInterface main component
- */
+// ---------- Theme Toggle (local) ----------
+function ThemeToggleLocal({ className = "", theme, setTheme }) {
+  return (
+    <button
+      aria-label="Toggle theme"
+      onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
+      className={`p-2 rounded-lg border border-white/10 bg-white/5 hover:bg-white/10 transition ${className}`}
+      title="Toggle theme"
+    >
+      {theme === "dark" ? <Sun className="w-5 h-5" /> : <Moon className="w-5 h-5" />}
+    </button>
+  );
+}
+
+// ---------- Main ChatInterface component ----------
 export default function ChatInterface() {
   // app state
   const [conversations, setConversations] = useState([]);
   const [currentConversation, setCurrentConversation] = useState(null);
   const [messages, setMessages] = useState([]);
-  const [agents, setAgents] = useState({});
-  const [selectedAgent, setSelectedAgent] = useState("");
+  const [agents, setAgents] = useState(FALLBACK_AGENTS);
+  const [selectedAgent, setSelectedAgent] = useState("general");
   const [inputMessage, setInputMessage] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isTyping, setIsTyping] = useState(false);
@@ -285,28 +307,38 @@ export default function ChatInterface() {
   const [showSidebar, setShowSidebar] = useState(true);
   const [theme, setTheme] = useState(() => {
     try {
-      return localStorage.getItem("rockbot_theme") || "dark";
+      return localStorage.getItem(LS_THEME_KEY) || "dark";
     } catch {
       return "dark";
     }
   });
+  const [autoscroll, setAutoscroll] = useState(true);
+  const [loadingInitial, setLoadingInitial] = useState(true);
 
   // refs
   const messagesEndRef = useRef(null);
-  const scrollAreaRef = useRef(null);
+  const scrollContainerRef = useRef(null);
 
-  // Theme persistence
+  // apply theme on mount + persist
   useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
     try {
-      localStorage.setItem("rockbot_theme", theme);
-    } catch { }
+      const root = document.documentElement;
+      root.classList.toggle("dark", theme === "dark");
+      localStorage.setItem(LS_THEME_KEY, theme);
+    } catch {}
   }, [theme]);
 
-  // initial load
+  // load agents and conversations initially
   useEffect(() => {
-    loadAgents();
-    loadConversations();
+    (async () => {
+      try {
+        await loadAgents();
+        await loadConversations();
+      } finally {
+        setLoadingInitial(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // load messages when conversation changes
@@ -316,62 +348,133 @@ export default function ChatInterface() {
     } else {
       setMessages([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [currentConversation?.id]);
 
-  // autoscroll when messages change
+  // autoscroll to bottom when messages appended (if autoscroll is true)
   useEffect(() => {
-    messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" });
+    if (autoscroll) {
+      messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth", block: "end" });
+    }
   }, [messages, isTyping]);
 
-  // -------------------------
-  // API calls
-  // -------------------------
+  // monitor user scrolling to toggle autoscroll automatically when user scrolls up
+  useEffect(() => {
+    const el = scrollContainerRef.current;
+    if (!el) return;
+    let ticking = false;
+    function onScroll() {
+      if (ticking) return;
+      ticking = true;
+      window.requestAnimationFrame(() => {
+        const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 120; // threshold
+        if (!nearBottom && autoscroll) {
+          setAutoscroll(false);
+        } else if (nearBottom && !autoscroll) {
+          setAutoscroll(true);
+        }
+        ticking = false;
+      });
+    }
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => el.removeEventListener("scroll", onScroll);
+  }, [autoscroll]);
 
+  // ---------- API functions ----------
+
+  async function safeFetchJson(url, opts = {}) {
+    try {
+      const res = await fetch(url, opts);
+      if (!res.ok) {
+        const txt = await res.text();
+        const e = new Error(`HTTP ${res.status}: ${txt}`);
+        e.status = res.status;
+        throw e;
+      }
+      const ct = res.headers.get("content-type") || "";
+      if (ct.includes("application/json")) return await res.json();
+      // if not json, return text
+      return await res.text();
+    } catch (err) {
+      throw err;
+    }
+  }
+
+  // load available agents
   async function loadAgents() {
     try {
-      const res = await fetch(`${API_BASE}/agents`);
-      if (!res.ok) throw new Error(`Failed to fetch agents: ${res.status}`);
-      const data = await res.json();
-      setAgents(data || {});
-      // set selected agent to first key if not set
-      const keys = Object.keys(data || {});
-      if (!selectedAgent && keys.length > 0) {
-        setSelectedAgent(keys[0]);
-      } else if (!selectedAgent) {
-        setSelectedAgent("general");
+      const data = await safeFetchJson(`${API_BASE}/agents`);
+      if (data && typeof data === "object") {
+        setAgents(data);
+        // pick first agent if none selected
+        const keys = Object.keys(data || {});
+        if (keys.length > 0 && !selectedAgent) setSelectedAgent(keys[0]);
       }
     } catch (e) {
-      console.warn("loadAgents error", e);
-      // Keep selectedAgent default
+      console.warn("Could not load agents, using fallback:", e);
+      setAgents((prev) => (prev && Object.keys(prev).length > 0 ? prev : FALLBACK_AGENTS));
     }
   }
 
+  // load conversations list
   async function loadConversations() {
     try {
-      const res = await fetch(`${API_BASE}/conversations`);
-      if (!res.ok) throw new Error("Failed to load conversations");
-      const data = await res.json();
-      setConversations(Array.isArray(data) ? data : []);
-      if (!currentConversation && Array.isArray(data) && data.length > 0) {
-        setCurrentConversation(data[0]);
+      const data = await safeFetchJson(`${API_BASE}/conversations`);
+      if (Array.isArray(data)) {
+        setConversations(data);
+        // set first conversation active if no current conversation
+        if (!currentConversation && data.length > 0) {
+          setCurrentConversation(data[0]);
+        }
+      } else {
+        setConversations([]);
       }
     } catch (e) {
-      console.warn("loadConversations error", e);
+      console.warn("loadConversations failed:", e);
+      setConversations([]);
     }
   }
 
+  // load single conversation (messages + meta)
   async function loadConversation(id) {
+    if (!id) return;
     try {
-      const res = await fetch(`${API_BASE}/conversations/${id}`);
-      if (!res.ok) throw new Error("Failed to load conversation");
-      const json = await res.json();
-      setCurrentConversation(json.conversation || { id });
-      setMessages(json.messages || []);
+      const data = await safeFetchJson(`${API_BASE}/conversations/${id}`);
+      // server expected shape: { conversation, messages } or { conversation: {...}, messages: [...] }
+      const conv = data?.conversation || data;
+      const msgs = data?.messages || data?.messages === undefined ? (data.messages || []) : [];
+      // Some APIs return messages inside the top-level response (e.g. { messages: [...] }).
+      // We'll try multiple fallbacks:
+      let messageList = [];
+      if (Array.isArray(msgs) && msgs.length > 0) {
+        messageList = msgs;
+      } else if (Array.isArray(data?.messages)) {
+        messageList = data.messages;
+      } else if (Array.isArray(data)) {
+        messageList = data;
+      }
+
+      // Apply local deleted message filtration
+      messageList = (messageList || []).filter((m) => !isMessageLocallyDeleted(String(id), String(m.id || m._id || m.temp_id || uid("x"))));
+
+      setCurrentConversation(conv || { id });
+      setMessages(messageList);
     } catch (e) {
-      console.warn("loadConversation error", e);
+      console.warn("loadConversation failed, trying fallback /conversations/{id}/messages:", e);
+      // fallback: try /conversations/{id}/messages
+      try {
+        const fallback = await safeFetchJson(`${API_BASE}/conversations/${id}/messages`);
+        const msgList = Array.isArray(fallback) ? fallback : fallback?.messages || [];
+        const filtered = msgList.filter((m) => !isMessageLocallyDeleted(String(id), String(m.id || m._id || uid("x"))));
+        setMessages(filtered);
+      } catch (e2) {
+        console.warn("fallback loadConversation failed too: ", e2);
+        setMessages([]);
+      }
     }
   }
 
+  // create conversation
   async function createNewConversation() {
     try {
       const res = await fetch(`${API_BASE}/conversations`, {
@@ -379,34 +482,57 @@ export default function ChatInterface() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title: "New Conversation" }),
       });
-      if (!res.ok) throw new Error("Failed to create");
+      if (!res.ok) {
+        // fallback: create a local conversation object
+        const conv = { id: uid("conv-"), title: "New Conversation", created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        setConversations((prev) => [conv, ...(prev || [])]);
+        setCurrentConversation(conv);
+        setMessages([]);
+        return;
+      }
       const json = await res.json();
-      setCurrentConversation(json);
+      // server might return the created conversation object or minimal info
+      const conv = json || (await res.json());
+      setConversations((prev) => [conv, ...(prev || [])]);
+      setCurrentConversation(conv);
       setMessages([]);
-      await loadConversations();
     } catch (e) {
-      console.warn("createNewConversation error", e);
+      console.warn("createNewConversation fallback:", e);
+      // fallback local conv
+      const conv = { id: uid("conv-"), title: "New Conversation", created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+      setConversations((prev) => [conv, ...(prev || [])]);
+      setCurrentConversation(conv);
+      setMessages([]);
     }
   }
 
+  // delete conversation
   async function deleteConversation(conversation) {
     if (!conversation?.id) return;
-    if (!confirm("Delete this conversation?")) return;
+    if (!confirm("Delete this conversation? This cannot be undone.")) return;
     try {
       const res = await fetch(`${API_BASE}/conversations/${conversation.id}`, { method: "DELETE" });
-      if (!res.ok) throw new Error("Failed to delete conversation");
-      // Remove from ui
+      if (!res.ok) {
+        throw new Error(`Failed to delete: ${res.status}`);
+      }
+      // remove locally
       setConversations((prev) => prev.filter((c) => c.id !== conversation.id));
       if (currentConversation?.id === conversation.id) {
         setCurrentConversation(null);
         setMessages([]);
       }
     } catch (e) {
-      console.warn("deleteConversation error", e);
-      alert("Failed to delete conversation");
+      console.warn("deleteConversation fallback:", e);
+      // fallback local removal
+      setConversations((prev) => prev.filter((c) => c.id !== conversation.id));
+      if (currentConversation?.id === conversation.id) {
+        setCurrentConversation(null);
+        setMessages([]);
+      }
     }
   }
 
+  // export conversation as PDF (or fallback to text)
   async function exportConversationPDF(conversation) {
     if (!conversation?.id) return;
     try {
@@ -414,7 +540,7 @@ export default function ChatInterface() {
       if (!res.ok) {
         // fallback to text export endpoint
         const t = await (await fetch(`${API_BASE}/conversations/${conversation.id}/export`)).json();
-        const blob = new Blob([t.export_text], { type: "text/plain" });
+        const blob = new Blob([t.export_text || JSON.stringify(t.share_data || {})], { type: "text/plain" });
         const url = URL.createObjectURL(blob);
         const a = document.createElement("a");
         a.href = url;
@@ -431,16 +557,17 @@ export default function ChatInterface() {
       a.click();
       URL.revokeObjectURL(url);
     } catch (e) {
-      console.warn("exportConversationPDF error", e);
+      console.warn("exportConversationPDF failed:", e);
       alert("Export failed");
     }
   }
 
+  // share conversation
   async function shareConversation(conversation) {
     if (!conversation?.id) return;
     try {
       const res = await fetch(`${API_BASE}/conversations/${conversation.id}/export`);
-      if (!res.ok) throw new Error("Share failed");
+      if (!res.ok) throw new Error("share failed");
       const data = await res.json();
       const text = data.export_text || JSON.stringify(data.share_data || {});
       if (navigator.share) {
@@ -450,29 +577,27 @@ export default function ChatInterface() {
         alert("Conversation copied to clipboard");
       }
     } catch (e) {
-      console.warn("shareConversation error", e);
-      alert("Failed to share conversation");
+      console.warn("shareConversation failed:", e);
+      alert("Share failed");
     }
   }
 
-  // -------------------------
-  // Messages / editor / send
-  // -------------------------
+  // ---------- Message operations ----------
 
   function startEdit(msg) {
     if (!msg) return;
     setEditingId(msg.id);
     setEditingText(msg.content || "");
-    // focus handled by input
+    // optionally focus the input; handled below when editing occurs
   }
 
   async function saveEditedMessage(id, newContent) {
-    // optimistic UI update
+    // optimistic UI
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, content: newContent } : m)));
     setEditingId(null);
     setEditingText("");
 
-    // optional backend call - may not exist
+    // try server edit endpoint
     try {
       const res = await fetch(`${API_BASE}/messages/${id}`, {
         method: "PUT",
@@ -480,35 +605,75 @@ export default function ChatInterface() {
         body: JSON.stringify({ content: newContent }),
       });
       if (!res.ok) {
-        console.warn("edit message not supported on server or failed", await res.text());
+        console.warn("Server did not accept edit:", await res.text());
       }
     } catch (e) {
-      console.warn("saveEditedMessage error", e);
+      console.warn("saveEditedMessage fallback:", e);
     }
   }
 
+  // delete message with persistence fallback
   async function deleteMessage(msg) {
+    if (!msg?.id) {
+      // remove locally without contacting server (unknown id)
+      setMessages((prev) => prev.filter((m) => m !== msg));
+      return;
+    }
     // optimistic UI
     setMessages((prev) => prev.filter((m) => m.id !== msg.id));
+
+    // Try server DELETE endpoint first
     try {
       const res = await fetch(`${API_BASE}/messages/${msg.id}`, { method: "DELETE" });
-      if (!res.ok) {
-        console.warn("server delete message failed", await res.text());
+      if (res.ok) {
+        // success - also remove any local deleted mark
+        removeLocalDeletedMark(String(currentConversation?.id || ""), String(msg.id));
+        return;
       }
+      // if server returns 404/405/other, fallback to alternative persistence
+      console.warn("Server delete returned", res.status);
     } catch (e) {
-      console.warn("deleteMessage error", e);
+      console.warn("Server delete failed:", e);
+    }
+
+    // fallback #1: try to update conversation by sending messages list (server may support)
+    try {
+      const convId = currentConversation?.id;
+      if (convId) {
+        // Build message list to send (without deleted message)
+        const payloadMessages = (messages || []).filter((m) => m.id !== msg.id);
+        const res2 = await fetch(`${API_BASE}/conversations/${convId}`, {
+          method: "PUT",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ messages: payloadMessages }),
+        });
+        if (res2.ok) {
+          return;
+        } else {
+          console.warn("PUT conversation to remove message failed:", res2.status);
+        }
+      }
+    } catch (e2) {
+      console.warn("PUT conversation fallback error:", e2);
+    }
+
+    // fallback #2: persist deletion locally using localStorage so it survives refresh
+    try {
+      markMessageDeletedLocally(String(currentConversation?.id || "local"), String(msg.id));
+    } catch (e3) {
+      console.warn("markMessageDeletedLocally failed:", e3);
     }
   }
 
+  // copy text to clipboard
   function copyTextToClipboard(text) {
     if (!text) return;
     navigator.clipboard.writeText(text).catch((e) => console.warn("copy failed", e));
   }
 
+  // reactMessage (like/dislike)
   async function reactMessage(id, reaction) {
-    // optimistic UI: find message and bump counts
     setMessages((prev) => prev.map((m) => (m.id === id ? { ...m, likes: reaction === "like" ? (m.likes || 0) + 1 : m.likes || 0, dislikes: reaction === "dislike" ? (m.dislikes || 0) + 1 : m.dislikes || 0 } : m)));
-    // optional server call
     try {
       const res = await fetch(`${API_BASE}/messages/${id}/reaction`, {
         method: "POST",
@@ -516,29 +681,23 @@ export default function ChatInterface() {
         body: JSON.stringify({ reaction }),
       });
       if (!res.ok) {
-        console.warn("server reaction failed", await res.text());
+        console.warn("Server reaction failed", await res.text());
       }
     } catch (e) {
-      console.warn("reactMessage error", e);
+      console.warn("reactMessage fallback:", e);
     }
   }
 
   function replyToMessage(msg) {
     if (!msg) return;
-    setInputMessage((prev) => `${prev}${prev ? " " : ""}@reply: ${msg.content.slice(0, 120)} `);
-    // focus input ideally
+    setInputMessage((prev) => `${prev ? prev + " " : ""}> ${msg.content.slice(0, 200)} `);
     const el = document.querySelector("textarea[data-rockbot-input]");
     el?.focus?.();
   }
 
-  /**
-   * sendMessage: central function to send
-   * - supports optimistic user message
-   * - supports filePayload objects returned by file uploader (localUrl, name, data)
-   */
+  // ---------- Sending messages (optimistic + agent param) ----------
   async function sendMessage(editId = null, filePayload = null) {
     const content = editId ? editingText.trim() : inputMessage.trim();
-
     if (!content && !filePayload) return;
 
     if (editId) {
@@ -546,7 +705,6 @@ export default function ChatInterface() {
       return;
     }
 
-    // optimistic user message
     const tmpId = uid("tmp-");
     const userMessage = {
       id: tmpId,
@@ -563,15 +721,14 @@ export default function ChatInterface() {
     setInputMessage("");
     setIsLoading(true);
     setIsTyping(true);
+    setAutoscroll(true);
 
     try {
-      // request body
       const body = {
         message: content,
         conversation_id: currentConversation?.id,
-        agent_type: selectedAgent,
+        agent_type: selectedAgent || "general",
       };
-
       if (filePayload?.data) body.file = filePayload.data;
 
       const res = await fetch(`${API_BASE}/chat`, {
@@ -579,61 +736,51 @@ export default function ChatInterface() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
-
       if (!res.ok) {
-        // failure fallback
-        const errText = await res.text();
-        throw new Error(`Chat failed: ${errText}`);
+        const txt = await res.text().catch(() => "no details");
+        throw new Error(`Chat request failed: ${txt}`);
       }
-
       const json = await res.json();
 
-      // replace tmp message (sending) with server id if returned
+      // replace tmp message id if server returned user_message.id
       setMessages((prev) => prev.map((m) => (m.id === tmpId ? { ...m, sending: false, id: json?.user_message?.id || json?.user_message_id || m.id } : m)));
 
-      // attach assistant response(s)
+      // append ai response(s)
       if (json?.ai_response) {
         const aiList = Array.isArray(json.ai_response) ? json.ai_response : [json.ai_response];
         const toAppend = aiList.map((r) => {
           if (typeof r === "string") {
             return { id: uid("ai-"), role: "assistant", content: r, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 };
           } else {
-            // if server returns message object
             return { id: r.id || uid("ai-"), role: "assistant", content: r.content || r.text || JSON.stringify(r).slice(0, 300), timestamp: r.timestamp || new Date().toISOString(), likes: r.likes || 0, dislikes: r.dislikes || 0 };
           }
         });
         setMessages((prev) => [...prev, ...toAppend]);
       } else {
-        // fallback assistant message
-        setMessages((prev) => [
-          ...prev,
-          { id: uid("ai-"), role: "assistant", content: json?.response || "No response.", timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
-        ]);
+        // fallback if server returned `response` or single string
+        const fallbackText = json?.response || json?.text || "No assistant response";
+        setMessages((prev) => [...prev, { id: uid("ai-"), role: "assistant", content: fallbackText, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 }]);
       }
 
-      // if new conversation created by server, update current conversation
+      // if server created new conversation id, update local list
       if (!currentConversation && json?.conversation_id) {
-        setCurrentConversation({ id: json.conversation_id });
+        const conv = { id: json.conversation_id, title: "Conversation", created_at: new Date().toISOString(), updated_at: new Date().toISOString() };
+        setCurrentConversation(conv);
         await loadConversations();
       } else {
-        // else refresh conversations list to update timestamps
+        // refresh conversation list to update timestamps
         await loadConversations();
       }
     } catch (err) {
-      console.error("sendMessage error", err);
-      setMessages((prev) => [
-        ...prev,
-        { id: uid("ai-err"), role: "assistant", content: `Sorry — I couldn't send the message: ${err.message}`, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 },
-      ]);
+      console.error("sendMessage error:", err);
+      setMessages((prev) => [...prev, { id: uid("ai-err"), role: "assistant", content: `Sorry — I couldn't send the message: ${err.message}`, timestamp: new Date().toISOString(), likes: 0, dislikes: 0 }]);
     } finally {
       setIsLoading(false);
       setTimeout(() => setIsTyping(false), 200);
     }
   }
 
-  // -------------------------
-  // UI Actions & small helpers
-  // -------------------------
+  // ---------- Helper UI actions ----------
   function toggleSidebar() {
     setShowSidebar((s) => !s);
   }
@@ -645,21 +792,15 @@ export default function ChatInterface() {
     }
   };
 
-  // -------------------------
-  // Render
-  // -------------------------
+  // ------------- Render -------------
   return (
     <div className="min-h-screen w-full flex items-center justify-center p-2 bg-gradient-to-b from-gray-900 to-gray-800 text-white">
       <div className="w-full max-w-6xl h-[92vh] rounded-2xl overflow-hidden bg-[#0f1724] border border-white/5 flex shadow-2xl">
         {/* Sidebar */}
-        <div className={`bg-[#0b1220] border-r border-white/5 transition-transform ${showSidebar ? "w-80" : "w-0 overflow-hidden"}`}>
-          {/* Try to render imported Sidebar if it expects props; otherwise fallback to LocalSidebar */}
-          {/* We pass handlers in case your Sidebar uses them. If it doesn't, LocalSidebar below ensures actions exist. */}
+        <div className={`bg-[#0b1220] border-r border-white/5 transition-all ${showSidebar ? "w-80" : "w-0 overflow-hidden"}`}>
           <div className="h-full">
-            {/* If your Sidebar component expects different props, it will simply ignore extras. */}
-            {/* Render both: imported Sidebar (if present) and fallback list. */}
+            {/* Hidden import usage - prevents tree-shake but remains hidden */}
             <div className="hidden">
-              {/* keep import usage so bundler doesn't tree-shake the import away; but hidden */}
               <Sidebar
                 conversations={conversations}
                 currentConversation={currentConversation}
@@ -675,7 +816,7 @@ export default function ChatInterface() {
               />
             </div>
 
-            {/* Visible fallback sidebar */}
+            {/* Visible fallback */}
             <LocalSidebar
               conversations={conversations}
               currentConversation={currentConversation}
@@ -697,42 +838,23 @@ export default function ChatInterface() {
           {/* Header */}
           <div className="px-4 py-3 border-b border-white/5 bg-[#061124] flex items-center justify-between">
             <div className="flex items-center gap-4">
-              <button onClick={toggleSidebar} className="px-2 py-1 border rounded bg-white/5">
-                ☰
-              </button>
+              <button onClick={toggleSidebar} className="px-2 py-1 border rounded bg-white/5">☰</button>
               <div className="text-xl font-bold">Rockbot</div>
               <div className="text-sm opacity-80">{currentConversation?.title || "No conversation selected"}</div>
             </div>
 
             <div className="flex items-center gap-3">
-              {/* Agent selector */}
               <AgentSelector agents={agents} selectedAgent={selectedAgent} setSelectedAgent={setSelectedAgent} />
 
-              {/* theme toggle */}
-              {/* <button
-                onClick={() => setTheme((t) => (t === "dark" ? "light" : "dark"))}
-                title="Toggle theme"
-                className="px-2 py-1 rounded border bg-white/5"
-              >
-                {theme === "dark" ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />}
-              </button> */}
-              <ThemeToggle className="ml-2" />
+              {/* theme toggle - local */}
+              <ThemeToggleLocal theme={theme} setTheme={setTheme} className="ml-2" />
 
-
-              {/* Export/share buttons */}
-              <div className="flex gap-1">
-                <button
-                  title="Export conversation"
-                  onClick={() => exportConversationPDF(currentConversation)}
-                  className="p-1 rounded border"
-                >
+              {/* Export / Share */}
+              <div className="flex gap-1 ml-2">
+                <button title="Export conversation" onClick={() => exportConversationPDF(currentConversation)} className="p-1 rounded border">
                   <Download className="w-4 h-4" />
                 </button>
-                <button
-                  title="Share conversation"
-                  onClick={() => shareConversation(currentConversation)}
-                  className="p-1 rounded border"
-                >
+                <button title="Share conversation" onClick={() => shareConversation(currentConversation)} className="p-1 rounded border">
                   <Share2 className="w-4 h-4" />
                 </button>
               </div>
@@ -743,20 +865,28 @@ export default function ChatInterface() {
           <div className="flex-1 min-h-0 relative">
             {!currentConversation ? (
               <div className="h-full flex items-center justify-center">
-                <EmptyState onCreate={createNewConversation} />
+                {/* prefer imported EmptyState if available else fallback */}
+                <div className="text-center">
+                  <div className="mb-4 text-lg">No conversation selected</div>
+                  <div className="flex justify-center">
+                    <Button onClick={createNewConversation}>Create new conversation</Button>
+                  </div>
+                </div>
               </div>
             ) : (
               <div className="h-full flex flex-col">
-                <div ref={scrollAreaRef} className="flex-1 overflow-auto p-6">
+                <div ref={scrollContainerRef} className="flex-1 overflow-auto p-6">
                   <div className="mx-auto max-w-4xl">
                     <div className="flex flex-col gap-2">
-                      {/* Messages */}
                       {messages.length === 0 && !isTyping ? (
                         <div className="text-center text-sm opacity-70 py-8">No messages yet — start the conversation below.</div>
                       ) : (
                         messages.map((m) => {
                           const isOwn = m.role === "user";
-                          // If editing this message, show inline edit box (user messages only)
+                          // if locally deleted, skip (safety)
+                          if (isMessageLocallyDeleted(String(currentConversation?.id || ""), String(m.id || m._id || m.temp_id || ""))) return null;
+
+                          // editing UI for user's message
                           if (editingId === m.id && isOwn) {
                             return (
                               <div key={m.id || uid("editing-")} className={`w-full flex ${isOwn ? "justify-end" : "justify-start"} py-1`}>
@@ -778,13 +908,12 @@ export default function ChatInterface() {
                             );
                           }
 
-                          // For assistant messages, provide like/dislike/copy/reply
+                          // assistant message: show assistant toolbar (no edit/delete)
                           if (!isOwn) {
                             return (
                               <div key={m.id || uid("a-")} className={`w-full ${isOwn ? "flex justify-end" : "flex justify-start"} py-1`}>
                                 <div className="w-full max-w-[78%]">
-                                  {/* Use imported Message component if available (expected to render nicely).
-                                      If your imported Message ignores props, our MessageBubble ensures actions exist. */}
+                                  {/* use imported Message component with toolbar turned off (we provide toolbar) */}
                                   <div className="mb-1">
                                     <Message
                                       message={m}
@@ -794,7 +923,7 @@ export default function ChatInterface() {
                                       onDislike={() => reactMessage(m.id, "dislike")}
                                       onReply={() => replyToMessage(m)}
                                       showAvatar
-                                      showToolbar={false} // we render our own toolbar to ensure correct actions
+                                      showToolbar={false}
                                     />
                                   </div>
 
@@ -812,7 +941,7 @@ export default function ChatInterface() {
                             );
                           }
 
-                          // For user messages, show edit/delete
+                          // user message (editable)
                           return (
                             <div key={m.id || uid("u-")} className={`w-full ${isOwn ? "flex justify-end" : "flex justify-start"} py-1`}>
                               <div className="w-full max-w-[78%]">
@@ -842,18 +971,16 @@ export default function ChatInterface() {
                   </div>
                 </div>
 
-                {/* Input / actions */}
+                {/* Input row */}
                 <div className="px-4 py-3 border-t border-white/5 bg-[#061124]">
                   <div className="max-w-4xl mx-auto flex items-center gap-3">
-                    {/* File uploader (inline) */}
+                    {/* inline file uploader */}
                     <FileUploaderInline onUploadComplete={async (payload) => {
-                      // payload: { localUrl, name, data }
                       if (!payload) return;
-                      // send as message with attachment
                       await sendMessage(null, payload);
                     }} />
 
-                    {/* Message input */}
+                    {/* message input */}
                     <div className="flex-1">
                       <textarea
                         data-rockbot-input
@@ -869,10 +996,20 @@ export default function ChatInterface() {
                       <Button onClick={() => sendMessage(editingId || null)} disabled={isLoading || (!inputMessage && !editingText)}>
                         {isLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
                       </Button>
+
+                      <button onClick={() => setAutoscroll((s) => !s)} title={autoscroll ? "Auto-scroll: ON" : "Auto-scroll: OFF"} className="p-2 rounded border">
+                        <ChevronDown className="w-4 h-4" />
+                      </button>
                     </div>
                   </div>
                 </div>
 
+                {/* quick scroll */}
+                <div className="absolute right-6 bottom-24">
+                  <button onClick={() => messagesEndRef.current?.scrollIntoView?.({ behavior: "smooth" })} title="Jump to latest" className="p-3 rounded-full bg-white/80 dark:bg-gray-800/60 shadow hover:scale-105">
+                    <svg xmlns="http://www.w3.org/2000/svg" className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 14l-7 7m0 0l-7-7m7 7V3" /></svg>
+                  </button>
+                </div>
               </div>
             )}
           </div>
@@ -881,4 +1018,3 @@ export default function ChatInterface() {
     </div>
   );
 }
-// frontend/rockbot-ui/src/components/ChatInterface.jsx
