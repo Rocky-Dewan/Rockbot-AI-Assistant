@@ -4,16 +4,16 @@ import { XIcon } from "lucide-react";
 import * as React from "react";
 
 // Context to track composition state across dialog children
-const DialogCompositionContext = React.createContext < {
+const DialogCompositionContext = React.createContext<{
   isComposing: () => boolean;
   setComposing: (composing: boolean) => void;
   justEndedComposing: () => boolean;
   markCompositionEnd: () => void;
-} > ({
+}>({
   isComposing: () => false,
-  setComposing: () => { },
+  setComposing: () => {},
   justEndedComposing: () => false,
-  markCompositionEnd: () => { },
+  markCompositionEnd: () => {},
 });
 
 export const useDialogComposition = () =>
@@ -24,7 +24,7 @@ function Dialog({
 }: React.ComponentProps<typeof DialogPrimitive.Root>) {
   const composingRef = React.useRef(false);
   const justEndedRef = React.useRef(false);
-  const endTimerRef = React.useRef < ReturnType < typeof setTimeout > | null > (null);
+  const endTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const contextValue = React.useMemo(
     () => ({
