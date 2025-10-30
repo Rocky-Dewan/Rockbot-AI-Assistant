@@ -305,10 +305,11 @@ function FileUploaderInline({ onUploadComplete }) {
       />
       <label
         htmlFor="file-upload-input"
-        className={`px-3 py-1 text-sm rounded cursor-pointer transition-colors ${isUploading
-          ? "bg-gray-400 text-gray-600"
-          : "bg-blue-500 hover:bg-blue-600 text-white dark:bg-blue-600 dark:hover:bg-blue-700"
-          }`}
+        className={`px-3 py-1 text-sm rounded cursor-pointer transition-colors ${
+          isUploading
+            ? "bg-gray-400 text-gray-600"
+            : "bg-blue-500 hover:bg-blue-600 text-white dark:bg-blue-600 dark:hover:bg-blue-700"
+        }`}
       >
         {isUploading ? "Uploading..." : "Attach File"}
       </label>
