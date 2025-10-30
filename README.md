@@ -13,7 +13,7 @@ A comprehensive AI assistant project with advanced features including Q&A, conte
 - **Adaptive Learning**: Conversation memory and context awareness
 
 ### User Interface
-- **Real-time Chat Interface**: Modern, responsive chat UI built with React
+- **Real-time Chat Interface**: Modern, responsive chat UI built with TypeScript
 - **Conversation Management**: Create, save, and manage multiple conversations
 - **Agent Selection**: Choose specific AI agents for different tasks
 - **Mobile-Friendly**: Responsive design for desktop and mobile devices
@@ -46,14 +46,14 @@ rockbot_assistant/
 │       │   └── main.py         # Flask application entry point
 │       ├── venv/               # Python virtual environment
 │       └── requirements.txt    # Python dependencies
-├── frontend/                   # React frontend
+├── frontend/                   # TypeScript frontend
 │   └── rockbot-ui/
 │       ├── src/
-│       │   ├── components/     # React components
+│       │   ├── components/     # TypeScript components
 │       │   │   ├── ui/         # UI components (shadcn/ui)
-│       │   │   └── ChatInterface.jsx
-│       │   ├── App.jsx         # Main App component
-│       │   └── main.jsx        # React entry point
+│       │   │   └── ChatInterface.tsx
+│       │   ├── App.tsx         # Main App component
+│       │   └── main.tsx        # TypeScript entry point
 │       ├── package.json        # Node.js dependencies
 │       └── dist/               # Production build
 ├── models/                     # AI models directory
@@ -248,10 +248,10 @@ The application uses SQLite with SQLAlchemy ORM:
 
 ### Frontend Components
 
-Built with React and modern UI components:
+Built with TypeScript and modern UI components:
 - Tailwind CSS for styling
 - shadcn/ui for UI components
-- Lucide React for icons
+- Lucide TypeScript for icons
 
 ## Deployment
 
