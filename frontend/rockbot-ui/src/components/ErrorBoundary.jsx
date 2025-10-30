@@ -2,14 +2,7 @@ import { cn } from "@/lib/utils";
 import { AlertTriangle, RotateCcw } from "lucide-react";
 import { Component, ReactNode } from "react";
 
-interface Props {
-  children: ReactNode;
-}
 
-interface State {
-  hasError: boolean;
-  error: Error | null;
-}
 
 class ErrorBoundary extends Component<Props, State> {
   constructor(props: Props) {
