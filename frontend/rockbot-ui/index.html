@@ -1,22 +1,33 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1" />
+
+  <!-- Favicon and Apple Touch Icon -->
   <link rel="icon" type="image/png" href="%VITE_APP_LOGO%" />
   <link rel="apple-touch-icon" href="%VITE_APP_LOGO%" />
+
+  <!-- Page title using environment variable fallback -->
   <title>%Rockbot - AI Assistant%</title>
-  <!-- Add Google Fonts here, example:
-    <link rel="preconnect" href="https://fonts.googleapis.com" />
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
-    -->
+
+  <!-- Optional: Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+
+  <!-- Optional: Tailwind base styles -->
+  <link rel="stylesheet" href="/src/index.css" />
 </head>
 
-<body>
+<body class="bg-white text-black dark:bg-black dark:text-white">
   <div id="root"></div>
+
+  <!-- React entry point -->
   <script type="module" src="/src/main.tsx"></script>
+
+  <!-- Optional analytics -->
   <script defer src="%VITE_ANALYTICS_ENDPOINT%/umami" data-website-id="%VITE_ANALYTICS_WEBSITE_ID%"></script>
 </body>
 
