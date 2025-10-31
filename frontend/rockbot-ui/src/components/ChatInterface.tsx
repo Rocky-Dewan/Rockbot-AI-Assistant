@@ -1,29 +1,10 @@
-// frontend/rockbot-ui/src/components/ChatInterface.jsx
-// Extended, self-contained Chat interface (Option 1 - direct API calls).
-// Purpose: fix the issues you described (sidebar toggling, theme persistence,
-// agent selection, assistant toolbar restrictions, delete persistence across refresh,
-// autoscroll logic, fallback behaviors when backend endpoints missing).
-//
-// Notes:
-// - Uses fetch(...) to call `${API_BASE}/...` endpoints directly.
-// - If backend DELETE/message endpoints are missing, we fall back to localStorage
-//   to persist deleted-message ids per conversation so deletions survive refresh.
-// - Theme is persisted via localStorage and applies 'dark' class to <html> (tailwind dark mode 'class').
-// - Autoscroll behavior: stays on by default, but will stop when user scrolls up.
-// - Agent selection: loaded from /api/agents; fallback default agents provided locally.
-// - Message toolbar: assistant messages only have copy/like/dislike/reply; user messages have edit/delete.
-// - File upload: posts to /api/upload (multimodal), but gracefully handles backend not implementing it.
-//
-// This file intentionally contains many helpers and inline fallback UI so it can work
-// even if some ui components are missing or behave differently in your existing project.
+
 
 import React, { useEffect, useRef, useState } from "react";
 import { Send, Loader2, ChevronDown, Copy, Trash2, Edit3, Download, Share2, Moon, Sun, X } from "lucide-react";
 import { motion } from "framer-motion";
 
-// Try to import existing UI components if present. We will also provide fallbacks inside this file.
-// Since we don't have the full project, we will rely on the inline fallbacks.
-// We will mock the imports to prevent build errors.
+
 const Sidebar: React.FC<{ children: React.ReactNode }> = ({ children }) => <div className="p-4">{children}</div>;
 const Header: React.FC<{ children: React.ReactNode }> = ({ children }) => <header className="p-4 border-b">{children}</header>;
 const EmptyState: React.FC = () => <div className="text-center p-8 text-gray-500">Start a new conversation!</div>;
@@ -305,11 +286,10 @@ function FileUploaderInline({ onUploadComplete }) {
       />
       <label
         htmlFor="file-upload-input"
-        className={`px-3 py-1 text-sm rounded cursor-pointer transition-colors ${
-          isUploading
+        className={`px-3 py-1 text-sm rounded cursor-pointer transition-colors ${isUploading
             ? "bg-gray-400 text-gray-600"
             : "bg-blue-500 hover:bg-blue-600 text-white dark:bg-blue-600 dark:hover:bg-blue-700"
-        }`}
+          }`}
       >
         {isUploading ? "Uploading..." : "Attach File"}
       </label>
